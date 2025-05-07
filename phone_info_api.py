@@ -1,14 +1,25 @@
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Request, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import phonenumbers
 from phonenumbers import geocoder, carrier, number_type
 from phonenumbers.phonenumberutil import NumberParseException
-from typing import Optional, Union
+from typing import Optional, Union, Callable
 import re
+import urllib.parse
 
 app = FastAPI(title="Phone Number Information API",
               description="API that provides detailed information about phone numbers worldwide",
               version="1.0.0")
+
+# Add CORS middleware to allow cross-origin requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 class PhoneInfoResponse(BaseModel):
     country_code: int
@@ -24,6 +35,58 @@ class ErrorResponse(BaseModel):
     error: str
     detail: str = ""
 
+def normalize_phone_number(phone_number: str) -> str:
+    """
+    Normalize phone number input to ensure it's properly formatted
+    with country code regardless of how it was entered
+    """
+    # First decode URL encoding if present
+    try:
+        phone_number = urllib.parse.unquote(phone_number)
+    except:
+        pass  # If it's not URL encoded, that's fine
+    
+    # Clean and normalize the phone number
+    cleaned_number = phone_number.strip()
+    
+    # Replace any non-breaking spaces or unusual whitespace
+    cleaned_number = re.sub(r'\s+', ' ', cleaned_number)
+    
+    # Ensure "+" is present for international format
+    if not cleaned_number.startswith("+"):
+        # Check if it starts with "00" (international prefix)
+        if cleaned_number.startswith("00"):
+            cleaned_number = "+" + cleaned_number[2:]
+        # Check if it could be an international number without "+"
+        # UK numbers (44)
+        elif re.match(r'^44\d{10}', cleaned_number):
+            cleaned_number = "+" + cleaned_number
+        # US/Canada (1)
+        elif re.match(r'^1\d{10}', cleaned_number):
+            cleaned_number = "+" + cleaned_number
+        # Australian numbers (61)
+        elif re.match(r'^61\d{9}', cleaned_number):
+            cleaned_number = "+" + cleaned_number
+        # Nigerian numbers (234)
+        elif re.match(r'^234\d{10}', cleaned_number):
+            cleaned_number = "+" + cleaned_number
+    
+    # Remove common formatting characters from phone numbers
+    cleaned_number = re.sub(r'[\(\)\-\.\s]', '', cleaned_number)
+    
+    # Re-add "+" if it was stripped
+    if not cleaned_number.startswith("+") and any(cleaned_number.startswith(cc) for cc in 
+                                                ["1", "44", "61", "234", "33", "49", "86", "91"]):
+        cleaned_number = "+" + cleaned_number
+        
+    return cleaned_number
+
+# Dependency to preprocess phone number parameter
+async def get_normalized_phone_number(
+    phone_number: str = Query(..., description="Phone number in any format with country code")
+) -> str:
+    return normalize_phone_number(phone_number)
+
 @app.get("/", include_in_schema=False)
 async def read_root():
     return {"message": "Welcome to the Phone Number Information API", 
@@ -33,27 +96,13 @@ async def read_root():
 @app.get("/phone-info", 
          response_model=Union[PhoneInfoResponse, ErrorResponse], 
          responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
-async def phone_info(phone_number: str = Query(..., description="Phone number in international format, e.g. +14155552671"), 
-               default_region: str = Query("US", description="Default region if country code is missing")):
+async def phone_info(
+    phone_number: str = Depends(get_normalized_phone_number),
+    default_region: str = Query("US", description="Default region if country code is missing")
+):
     try:
-        # Clean and normalize the phone number
-        cleaned_number = phone_number.strip()
-        
-        # Ensure we're dealing with the correct format
-        # If the number starts with a "+", make sure it's preserved
-        if not cleaned_number.startswith("+"):
-            # Check if it starts with "00" (international prefix)
-            if cleaned_number.startswith("00"):
-                cleaned_number = "+" + cleaned_number[2:]
-            # Check if it could be a UK number without + (starting with 44)
-            elif cleaned_number.startswith("44") and len(cleaned_number) > 10:
-                cleaned_number = "+" + cleaned_number
-            # For US/Canada numbers that start with 1
-            elif cleaned_number.startswith("1") and len(cleaned_number) > 10:
-                cleaned_number = "+" + cleaned_number
-            # For Australian numbers that start with 61
-            elif cleaned_number.startswith("61") and len(cleaned_number) > 8:
-                cleaned_number = "+" + cleaned_number
+        # Clean and normalize the phone number (now handled by dependency)
+        cleaned_number = phone_number
         
         # Before parsing, detect and enforce country code for common formats
         # Handle UK numbers specifically
@@ -65,6 +114,9 @@ async def phone_info(phone_number: str = Query(..., description="Phone number in
         # Handle Australian numbers
         elif re.match(r'^\+61|^61', cleaned_number):
             default_region = "AU"  # Force Australian parsing
+        # Handle Nigerian numbers
+        elif re.match(r'^\+234|^234', cleaned_number):
+            default_region = "NG"  # Force Nigerian parsing
             
         # Try to parse the number
         try:
@@ -88,7 +140,7 @@ async def phone_info(phone_number: str = Query(..., description="Phone number in
             except:
                 return ErrorResponse(
                     error="Unable to parse phone number",
-                    detail=f"The provided number '{phone_number}' could not be parsed. Please check the format."
+                    detail=f"The provided number '{phone_number}' could not be parsed. Please check the format and include the country code."
                 )
         
         # Double-check if the number has a recognized country code
