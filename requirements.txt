@@ -1,4 +1,7 @@
-fastapi==0.103.1
-uvicorn==0.23.2
-phonenumbers==8.13.20
-pydantic==2.3.0 
+fastapi>=0.95.0
+uvicorn[standard]>=0.21.1
+phonenumbers>=8.13.7
+pydantic>=1.10.7
+requests>=2.28.2
+pycountry>=22.3.5
+python-dotenv>=1.0.0 
