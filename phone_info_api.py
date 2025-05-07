@@ -4,6 +4,7 @@ import phonenumbers
 from phonenumbers import geocoder, carrier, number_type
 from phonenumbers.phonenumberutil import NumberParseException
 from typing import Optional, Union
+import re
 
 app = FastAPI(title="Phone Number Information API",
               description="API that provides detailed information about phone numbers worldwide",
@@ -38,25 +39,53 @@ async def phone_info(phone_number: str = Query(..., description="Phone number in
         # Clean and normalize the phone number
         cleaned_number = phone_number.strip()
         
-        # Handle international prefix (00) instead of +
-        if cleaned_number.startswith("00"):
-            cleaned_number = "+" + cleaned_number[2:]
+        # Ensure we're dealing with the correct format
+        # If the number starts with a "+", make sure it's preserved
+        if not cleaned_number.startswith("+"):
+            # Check if it starts with "00" (international prefix)
+            if cleaned_number.startswith("00"):
+                cleaned_number = "+" + cleaned_number[2:]
+            # Check if it could be a UK number without + (starting with 44)
+            elif cleaned_number.startswith("44") and len(cleaned_number) > 10:
+                cleaned_number = "+" + cleaned_number
+            # For US/Canada numbers that start with 1
+            elif cleaned_number.startswith("1") and len(cleaned_number) > 10:
+                cleaned_number = "+" + cleaned_number
+        
+        # Before parsing, detect and enforce country code for common formats
+        # Handle UK numbers specifically
+        if re.match(r'^\+44|^44', cleaned_number):
+            default_region = "GB"  # Force UK parsing
+        # Handle other specific cases as needed
+        elif re.match(r'^\+1|^1', cleaned_number) and len(cleaned_number) >= 11:
+            default_region = "US"  # Force US parsing
             
         # Try to parse the number
         try:
             parsed = phonenumbers.parse(cleaned_number, default_region)
         except NumberParseException:
-            # If parsing fails with the given format, try to see if it's a local number
+            # If parsing fails with the given format, try more aggressively
             try:
-                if not cleaned_number.startswith("+"):
-                    parsed = phonenumbers.parse(cleaned_number, default_region)
+                # If it looks like a UK number but wasn't properly formatted
+                if re.search(r'44\d{10}', cleaned_number):
+                    # Try to reformat as UK
+                    uk_number = "+44" + re.search(r'44(\d{10})', cleaned_number).group(1)
+                    parsed = phonenumbers.parse(uk_number, "GB")
                 else:
-                    raise
+                    # Last resort: try with the default region
+                    parsed = phonenumbers.parse(cleaned_number, default_region)
             except:
                 return ErrorResponse(
                     error="Unable to parse phone number",
-                    detail="The provided number could not be parsed. Please check the format."
+                    detail=f"The provided number '{phone_number}' could not be parsed. Please check the format."
                 )
+        
+        # Double-check if the number has a recognized country code
+        if parsed.country_code == 0:
+            return ErrorResponse(
+                error="Invalid country code",
+                detail="The phone number does not have a recognized country code."
+            )
         
         # Validate the number
         is_valid = phonenumbers.is_valid_number(parsed)
