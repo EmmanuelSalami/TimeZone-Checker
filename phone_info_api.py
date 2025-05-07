@@ -51,6 +51,9 @@ async def phone_info(phone_number: str = Query(..., description="Phone number in
             # For US/Canada numbers that start with 1
             elif cleaned_number.startswith("1") and len(cleaned_number) > 10:
                 cleaned_number = "+" + cleaned_number
+            # For Australian numbers that start with 61
+            elif cleaned_number.startswith("61") and len(cleaned_number) > 8:
+                cleaned_number = "+" + cleaned_number
         
         # Before parsing, detect and enforce country code for common formats
         # Handle UK numbers specifically
@@ -59,6 +62,9 @@ async def phone_info(phone_number: str = Query(..., description="Phone number in
         # Handle other specific cases as needed
         elif re.match(r'^\+1|^1', cleaned_number) and len(cleaned_number) >= 11:
             default_region = "US"  # Force US parsing
+        # Handle Australian numbers
+        elif re.match(r'^\+61|^61', cleaned_number):
+            default_region = "AU"  # Force Australian parsing
             
         # Try to parse the number
         try:
@@ -71,6 +77,11 @@ async def phone_info(phone_number: str = Query(..., description="Phone number in
                     # Try to reformat as UK
                     uk_number = "+44" + re.search(r'44(\d{10})', cleaned_number).group(1)
                     parsed = phonenumbers.parse(uk_number, "GB")
+                # If it looks like an Australian mobile but wasn't properly formatted
+                elif re.search(r'61\d{9}', cleaned_number):
+                    # Try to reformat as Australian
+                    au_number = "+61" + re.search(r'61(\d{9})', cleaned_number).group(1)
+                    parsed = phonenumbers.parse(au_number, "AU")
                 else:
                     # Last resort: try with the default region
                     parsed = phonenumbers.parse(cleaned_number, default_region)
@@ -94,12 +105,39 @@ async def phone_info(phone_number: str = Query(..., description="Phone number in
         # but we'll indicate it's not valid
         number_type_value = number_type(parsed)
         
+        # Get country and region
+        country = geocoder.country_name_for_number(parsed, "en")
+        region = geocoder.description_for_number(parsed, "en")
+        
+        # Special handling for Australian numbers
+        if parsed.country_code == 61:
+            # Ensure country is set correctly
+            country = "Australia"
+            
+            # For Australian mobile numbers (start with 4)
+            mobile_prefix = str(parsed.national_number)
+            if mobile_prefix.startswith('4'):
+                # If geocoder doesn't provide a region
+                if not region or region == "Unknown":
+                    region = "Australia Mobile"
+            
+            # For specific area codes
+            area_code = str(parsed.national_number)[:1]
+            if area_code == '2' and (not region or region == "Unknown"):
+                region = "Sydney/NSW"
+            elif area_code == '3' and (not region or region == "Unknown"):
+                region = "Melbourne/Victoria"
+            elif area_code == '7' and (not region or region == "Unknown"):
+                region = "Queensland"
+            elif area_code == '8' and (not region or region == "Unknown"):
+                region = "Adelaide/Perth"
+        
         # Get the information for the number
         return PhoneInfoResponse(
             country_code=parsed.country_code,
             national_number=parsed.national_number,
-            country=geocoder.country_name_for_number(parsed, "en") or "Unknown",
-            region=geocoder.description_for_number(parsed, "en") or "Unknown",
+            country=country or "Unknown",
+            region=region or "Unknown",
             carrier=carrier.name_for_number(parsed, "en") or "",
             type=str(number_type_value),
             is_valid=is_valid,
