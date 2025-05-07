@@ -2,14 +2,14 @@
     "version": 2,
     "builds": [
         {
-            "src": "phone_info_api.py",
+            "src": "api/index.py",
             "use": "@vercel/python"
         }
     ],
     "routes": [
         {
             "src": "/(.*)",
-            "dest": "phone_info_api.py"
+            "dest": "api/index.py"
         }
     ]
 } 
